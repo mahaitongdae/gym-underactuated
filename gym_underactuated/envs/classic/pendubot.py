@@ -255,7 +255,7 @@ class PendubotEnv(gym.Env):
         raise NotImplementedError()
     
     def render(self, mode='human'):
-        from gym.envs.classic_control import rendering
+        import rendering
 
         s = self.state
 
