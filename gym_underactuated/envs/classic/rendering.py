@@ -3,6 +3,7 @@
 """
 import os
 import sys
+from OpenGL.GL import *
 
 if "Apple" in sys.version:
     if 'DYLD_FALLBACK_LIBRARY_PATH' in os.environ:

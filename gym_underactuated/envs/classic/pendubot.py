@@ -84,9 +84,9 @@ class PendubotEnv(gym.Env):
         if self.initial_state:
             self.state = self.initial_state
         else:
-            self.state = self.np_random.uniform(low=-0.1, high=0.1, size=(2 * self.n_coords,))
+            self.state = self.np_random.normal(loc=0., scale=0.1, size=(2 * self.n_coords,))
             if self.task == "balance":
-                self.state[0] += np.pi
+                self.state[0] += np.pi / 2
         self.steps_beyond_done = None
         return np.array(self.state)
 
@@ -110,7 +110,8 @@ class PendubotEnv(gym.Env):
         th2 = self._unwrap_angle(th2)
 
         # clip torque, update dynamics
-        u = np.clip(action, -self.force_mag, self.force_mag)
+        # u = np.clip(action, -self.force_mag, self.force_mag)
+        u = action
         acc = self._accels(anp.array([th1, th2, th1_dot, th2_dot, u]))
 
         # integrate
@@ -187,8 +188,8 @@ class PendubotEnv(gym.Env):
         Coriolis matrix
         """
         th1, th2, th1_dot, th2_dot = state
-        c11 = -2 * self.d3 * anp.sin(th2) * th2_dot
-        c12 = -self.d3 * anp.sin(th2) * th2_dot
+        c11 = -1. * self.d3 * anp.sin(th2) * th2_dot
+        c12 = -self.d3 * anp.sin(th2) * (th2_dot + th1_dot)
         c21 = self.d3 * anp.sin(th2) * th1_dot
         c22 = 0.0
         return anp.array([[c11, c12],
@@ -199,8 +200,8 @@ class PendubotEnv(gym.Env):
         Gravitional matrix
         """
         th1, th2 = pos
-        g1 = self.d4 * anp.sin(th1) * self.g
-        g2 = self.d5 * anp.sin(th1 + th2) * self.g
+        g1 = self.d4 * anp.cos(th1) * self.g + self.d5 * self.g * anp.cos(th1 + th2)
+        g2 = self.d5 * anp.cos(th1 + th2) * self.g
         return anp.array([[g1],
                         [g2]])
 
@@ -232,16 +233,21 @@ class PendubotEnv(gym.Env):
         """
         return anp.linalg.inv(self._M(pos))
 
-    def total_energy(self, state):
+    def total_energy(self, state=None):
+        if state is None:
+            state = self.state
         pos = state[:self.n_coords]
         vel = state[self.n_coords:]
         return self.kinetic_energy(pos, vel) + self.potential_energy(pos)
 
     def kinetic_energy(self, pos, vel):
-        return
+        M = self._M(pos)
+        vel = vel.reshape((self.n_coords, 1))
+        return float(anp.dot(anp.dot(vel.T, M), vel))
 
     def potential_energy(self, pos):
-        return
+        th1, th2 = pos
+        return self.d4 * self.gravity * anp.sin(th1) + self.d5 * self.gravity * anp.sin(th1 + th2)
 
     def _unwrap_angle(self, theta):
         sign = (theta >=0)*1 - (theta < 0)*1
@@ -293,3 +299,32 @@ class PendubotEnv(gym.Env):
         if self.viewer:
             self.viewer.close()
         self.viewer = None
+
+def energy_based_controller(env, kd = 1., kp = 1., ke = 1.):
+
+    th1, th2, th1_dot, th2_dot = env.state
+    F_q_dotq = env.d2 * env.d3 * np.sin(th2) * (th1_dot + th2_dot) ** 2 + env.d3 ** 2 * np.cos(th2) * np.sin(th2) * th1_dot ** 2 \
+               - env.d2 * env.d4 * env.g * np.cos(th1) + env.d3 * env.d5 * env.g * np.cos(th2) * np.cos(th1 + th2)
+    th1_error = th1 - np.pi / 2
+    energy_error = env.total_energy() - (env.d4 + env.d5) * env.g
+
+    temp = env.d1 * env.d2 - env.d3 ** 2 * np.cos(th2) ** 2
+
+    torque = (- kd * F_q_dotq - temp * (th1_dot + kp * th1_error)) / (temp * ke * energy_error + kd * env.d2)
+
+    return torque
+
+
+def main():
+    env = PendubotEnv()
+    env.reset()
+    print(env.state)
+    for i in range(100):
+        action = energy_based_controller(env)
+        print(action)
+        state, _, _, _ = env.step(action)
+        print(state)
+        # env.render(mode='rgb_array')
+
+if __name__ == '__main__':
+    main()
