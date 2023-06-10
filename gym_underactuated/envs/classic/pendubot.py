@@ -7,22 +7,34 @@ import gym
 from gym import spaces, logger
 from gym.utils import seeding
 import numpy as np
-import autograd.numpy as anp
-from autograd import jacobian
+# import autograd.numpy as anp
+import numpy as anp
+# from autograd import jacobian
 from os import path
+from gym.error import *
+from scipy.integrate import odeint
 
 
 class PendubotEnv(gym.Env):
     metadata = {
         'render.modes': ['human', 'rgb_array'],
+        'render_fps': 30,
         'video.frames_per_second' : 50
     }
+
+    screen_dim = 500
+    screen = None
+    clock = None
+    isopen = True
+    render_mode = 'human'
 
     def __init__(self, task="balance", initial_state=None):
         # set task
         self.task = task
 
         self.initial_state = initial_state
+
+        self.last_u = None
         
         # gravity
         self.gravity = self.g = 9.8
@@ -48,14 +60,19 @@ class PendubotEnv(gym.Env):
         self.dt = 0.02  # seconds between state updates
         self.n_coords = 2
 
-        self.d1 = self.inertia_1 + self.m2 * self.L1**2
-        self.d2 = self.inertia_2
-        self.d3 = self.m2 * self.L1 * self.l2
-        self.d4 = self.m1 * self.l1 + self.m2 * self.L1
-        self.d5 = self.m2 * self.l2
+        # self.d1 = self.inertia_1 + self.m2 * self.L1**2
+        # self.d2 = self.inertia_2
+        # self.d3 = self.m2 * self.L1 * self.l2
+        # self.d4 = self.m1 * self.l1 + self.m2 * self.L1
+        # self.d5 = self.m2 * self.l2
+        self.d1 = 0.089252
+        self.d2 = 0.027630
+        self.d3 = 0.023502
+        self.d4 = 0.011204
+        self.d5 = 0.002938
 
         # precompute the jacobian of the dynamics
-        self.jacobian = self._jacobian()
+        # self.jacobian = self._jacobian()
 
         # Angle at which to fail the episode
         self.theta_threshold_radians = 12 * 2 * math.pi / 360
@@ -112,18 +129,22 @@ class PendubotEnv(gym.Env):
         # clip torque, update dynamics
         # u = np.clip(action, -self.force_mag, self.force_mag)
         u = action
-        acc = self._accels(anp.array([th1, th2, th1_dot, th2_dot, u]))
+        self.last_u = u
+        # acc = self._dynamics(anp.array([th1, th2, th1_dot, th2_dot, u]))
 
         # integrate
-        th1_acc, th2_acc = acc
+        # th1_acc, th2_acc = acc
 
-        # update pole 1 position and angular velocity
-        th1_dot = th1_dot + self.dt * th1_acc
-        th1 = th1 + self.dt * th1_dot + 0.5 * th1_acc * self.dt**2
+        # # update pole 1 position and angular velocity
+        # th1_dot = th1_dot + self.dt * th1_acc
+        # th1 = th1 + self.dt * th1_dot + 0.5 * th1_acc * self.dt**2
+        #
+        # # update pole 2 position and angular velocity
+        # th2_dot = th2_dot + self.dt * th2_acc
+        # th2 = th2 + self.dt * th2_dot + 0.5 * th2_acc * self.dt**2
 
-        # update pole 2 position and angular velocity
-        th2_dot = th2_dot + self.dt * th2_acc
-        th2 = th2 + self.dt * th2_dot + 0.5 * th2_acc * self.dt**2
+        new_state = odeint(lambda s, t: self._dynamics(np.append(s, u)), self.state, [0., 0. + self.dt])[1]
+        th1, th2, th1_dot, th2_dot = new_state
 
         # update state
         th1 = self._unwrap_angle(th1)
@@ -147,7 +168,7 @@ class PendubotEnv(gym.Env):
 
         return np.array(self.state), reward, done, {}
 
-    def _accels(self, vec):
+    def _dynamics(self, vec):
         """
         Calculate the accelerations
         """
@@ -160,14 +181,14 @@ class PendubotEnv(gym.Env):
         C = self._C(state)
         G = self._G(pos)
         acc = anp.dot(Minv, anp.dot(B, force) - anp.dot(C, vel.reshape((self.n_coords, 1))) - G)
-        return acc.flatten()
+        return np.append(vel, acc.flatten())
 
     def _F(self, vec):
         """
         Return derivative of state-space vector
         """
         qd = vec[self.n_coords:-1]
-        qdd = self._accels(vec)
+        qdd = self._dynamics(vec)
         return anp.array(list(qd) + list(qdd))
 
     def _M(self, pos):
@@ -259,48 +280,130 @@ class PendubotEnv(gym.Env):
         Integrate the equations of motion
         """
         raise NotImplementedError()
-    
-    def render(self, mode='human'):
-        import rendering
 
-        s = self.state
+    def render(self):
+        if self.render_mode is None:
+            gym.logger.warn(
+                "You are calling render method without specifying any render mode. "
+                "You can specify the render_mode at initialization, "
+                f'e.g. gym("{self.spec.id}", render_mode="rgb_array")'
+            )
+            return
 
-        if self.viewer is None:
-            self.viewer = rendering.Viewer(500,500)
-            bound = self.L1 + self.L2 + 0.2  # 2.2 for default
-            self.viewer.set_bounds(-bound,bound,-bound,bound)
+        try:
+            import pygame
+            from pygame import gfxdraw
+        except ImportError:
+            raise DependencyNotInstalled(
+                "pygame is not installed, run `pip install gym[classic_control]`"
+            )
 
-        if s is None: return None
+        if self.screen is None:
+            pygame.init()
+            if self.render_mode == "human":
+                pygame.display.init()
+                self.screen = pygame.display.set_mode(
+                    (self.screen_dim, self.screen_dim)
+                )
+            else:  # mode in "rgb_array"
+                self.screen = pygame.Surface((self.screen_dim, self.screen_dim))
+        if self.clock is None:
+            self.clock = pygame.time.Clock()
 
-        p1 = [-self.L1 *
-              np.cos(s[0]), self.L1 * np.sin(s[0])]
+        self.surf = pygame.Surface((self.screen_dim, self.screen_dim))
+        self.surf.fill((255, 255, 255))
 
-        p2 = [p1[0] - self.L2 * np.cos(s[0] + s[1]),
-              p1[1] + self.L2 * np.sin(s[0] + s[1])]
+        bound = 2.2
+        scale = self.screen_dim / (bound * 2)
+        offset = self.screen_dim // 2
 
-        xys = np.array([[0,0], p1, p2])[:,::-1]
-        thetas = [s[0]-np.pi/2, s[0]+s[1]-np.pi/2]
-        link_lengths = [self.L1, self.L2]
+        rod_length = 1 * scale
+        rod_width = 0.2 * scale
+        l, r, t, b = 0, rod_length, rod_width / 2, -rod_width / 2
+        coords = [(l, b), (l, t), (r, t), (r, b)]
+        transformed_coords = []
+        for c in coords:
+            c = pygame.math.Vector2(c).rotate_rad(self.state[0])
+            c = (c[0] + offset, c[1] + offset)
+            transformed_coords.append(c)
+        gfxdraw.aapolygon(self.surf, transformed_coords, (204, 77, 77))
+        gfxdraw.filled_polygon(self.surf, transformed_coords, (204, 77, 77))
 
-        self.viewer.draw_line((-2.2, 1), (2.2, 1))
-        for ((x,y),th,llen) in zip(xys, thetas, link_lengths):
-            l,r,t,b = 0, llen, .1, -.1
-            jtransform = rendering.Transform(rotation=th, translation=(x,y))
-            link = self.viewer.draw_polygon([(l,b), (l,t), (r,t), (r,b)])
-            link.add_attr(jtransform)
-            link.set_color(.88, .4, .4) 
-            circ = self.viewer.draw_circle(.12)
-            circ.set_color(.26, .26, .26)
-            circ.add_attr(jtransform)
+        gfxdraw.aacircle(self.surf, offset, offset, int(rod_width / 2), (204, 77, 77))
+        gfxdraw.filled_circle(
+            self.surf, offset, offset, int(rod_width / 2), (204, 77, 77)
+        )
 
-        return self.viewer.render(return_rgb_array = mode=='rgb_array')
+        rod_end = (rod_length, 0)
+        rod_end = pygame.math.Vector2(rod_end).rotate_rad(self.state[0])
+        rod_end = (int(rod_end[0] + offset), int(rod_end[1] + offset))
+        gfxdraw.aacircle(
+            self.surf, rod_end[0], rod_end[1], int(rod_width / 2), (204, 77, 77)
+        )
+        gfxdraw.filled_circle(
+            self.surf, rod_end[0], rod_end[1], int(rod_width / 2), (204, 77, 77)
+        )
+
+        ## rod 2
+        transformed_coords_2 = []
+        for c in coords:
+            c = pygame.math.Vector2(c).rotate_rad(self.state[0] + self.state[1])
+            c = (int(c[0]) + rod_end[0], int(c[1]) + rod_end[1])
+            transformed_coords_2.append(c)
+
+        gfxdraw.aapolygon(self.surf, transformed_coords_2, (204, 77, 77))
+        gfxdraw.filled_polygon(self.surf, transformed_coords_2, (204, 77, 77))
+
+        rod_end_2 = (rod_length, 0)
+        rod_end_2 = pygame.math.Vector2(rod_end_2).rotate_rad(self.state[0] + self.state[1])
+        rod_end_2 = (int(rod_end_2[0] + rod_end[0]), int(rod_end_2[1] + rod_end[1]))
+        gfxdraw.aacircle(
+            self.surf, rod_end_2[0], rod_end_2[1], int(rod_width / 2), (204, 77, 77)
+        )
+        gfxdraw.filled_circle(
+            self.surf, rod_end_2[0], rod_end_2[1], int(rod_width / 2), (204, 77, 77)
+        )
+
+
+        fname = path.join(path.dirname(__file__), "assets/clockwise.png")
+        img = pygame.image.load(fname)
+        if self.last_u is not None:
+            scale_img = pygame.transform.smoothscale(
+                img,
+                (10 * scale * np.abs(self.last_u) / 2, 10 * scale * np.abs(self.last_u) / 2),
+            )
+            is_flip = bool(self.last_u > 0)
+            scale_img = pygame.transform.flip(scale_img, is_flip, True)
+            self.surf.blit(
+                scale_img,
+                (
+                    offset - scale_img.get_rect().centerx,
+                    offset - scale_img.get_rect().centery,
+                ),
+            )
+
+        # drawing axle
+        gfxdraw.aacircle(self.surf, offset, offset, int(0.05 * scale), (0, 0, 0))
+        gfxdraw.filled_circle(self.surf, offset, offset, int(0.05 * scale), (0, 0, 0))
+
+        self.surf = pygame.transform.flip(self.surf, False, True)
+        self.screen.blit(self.surf, (0, 0))
+        if self.render_mode == "human":
+            pygame.event.pump()
+            self.clock.tick(self.metadata["render_fps"])
+            pygame.display.flip()
+
+        else:  # mode == "rgb_array":
+            return np.transpose(
+                np.array(pygame.surfarray.pixels3d(self.screen)), axes=(1, 0, 2)
+            )
 
     def close(self):
         if self.viewer:
             self.viewer.close()
         self.viewer = None
 
-def energy_based_controller(env, kd = 1., kp = 1., ke = 1.):
+def energy_based_controller(env, kd = 1., kp = 1., ke = 1.5):
 
     th1, th2, th1_dot, th2_dot = env.state
     F_q_dotq = env.d2 * env.d3 * np.sin(th2) * (th1_dot + th2_dot) ** 2 + env.d3 ** 2 * np.cos(th2) * np.sin(th2) * th1_dot ** 2 \
@@ -319,12 +422,12 @@ def main():
     env = PendubotEnv()
     env.reset()
     print(env.state)
-    for i in range(100):
+    for i in range(1000):
         action = energy_based_controller(env)
         print(action)
         state, _, _, _ = env.step(action)
         print(state)
-        # env.render(mode='rgb_array')
+        env.render()
 
 if __name__ == '__main__':
     main()
