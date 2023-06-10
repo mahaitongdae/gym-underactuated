@@ -57,7 +57,7 @@ class PendubotEnv(gym.Env):
 
         # Other params
         self.force_mag = 0.5
-        self.dt = 0.02  # seconds between state updates
+        self.dt = 0.05  # seconds between state updates
         self.n_coords = 2
 
         # self.d1 = self.inertia_1 + self.m2 * self.L1**2
@@ -155,16 +155,17 @@ class PendubotEnv(gym.Env):
         done = False
 
         if not done:
-            reward = 1.0
+            reward = - (th1 - np.pi / 2) ** 2 - th1_dot ** 2 - 0.01 * action ** 2
         elif self.steps_beyond_done is None:
             # Pole just fell!
             self.steps_beyond_done = 0
-            reward = 1.0
+            # reward = 1.0
+            reward = - (th1 - np.pi / 2) ** 2 - th1_dot ** 2 - 0.01 * action ** 2
         else:
             if self.steps_beyond_done == 0:
                 logger.warn("You are calling 'step()' even though this environment has already returned done = True. You should always call 'reset()' once you receive 'done = True' -- any further steps are undefined behavior.")
             self.steps_beyond_done += 1
-            reward = 0.0
+            reward = -10.0
 
         return np.array(self.state), reward, done, {}
 
@@ -422,12 +423,15 @@ def main():
     env = PendubotEnv()
     env.reset()
     print(env.state)
-    for i in range(1000):
+    rewards = 0.
+    for i in range(200):
         action = energy_based_controller(env)
-        print(action)
-        state, _, _, _ = env.step(action)
-        print(state)
+        # print(action)
+        _, reward, _, _ = env.step(action)
+
+        rewards += reward
         env.render()
+    print(rewards)
 
 if __name__ == '__main__':
     main()
