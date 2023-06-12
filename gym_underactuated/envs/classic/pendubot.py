@@ -19,7 +19,7 @@ class PendubotEnv(gym.Env):
     metadata = {
         'render.modes': ['human', 'rgb_array'],
         'render_fps': 30,
-        'video.frames_per_second' : 50
+        'video.frames_per_second': 50
     }
 
     screen_dim = 500
@@ -28,43 +28,50 @@ class PendubotEnv(gym.Env):
     isopen = True
     render_mode = 'human'
 
-    def __init__(self, task="balance", initial_state=None):
+    def __init__(self, task="balance", initial_state=None, noisy=False, noisy_scale=1.):
         # set task
         self.task = task
 
         self.initial_state = initial_state
 
         self.last_u = None
-        
+        self.noisy = noisy
+        self.noisy_scale = noisy_scale
+
         # gravity
         self.gravity = self.g = 9.8
 
         # pole 1
-        self.m1 = 0.1
-        self.l1 = self.len1 = 1.0 # actually half the pole's length
-        self.L1 = 2 * self.l1
-        self.I1 = (1/12) * self.m1 * (2 * self.len1)**2
-        self.inertia_1= (self.I1 + self.m1 * self.len1**2)
-        self.pm_len1 = self.m1 * self.len1
+        self.m1 = 0.1  # mass
+        self.lc1 = self.lc1 = 1.0  # length from the origin to the center of mass
+        self.L1 = 2.0  # length
+        self.I1 = (1 / 12) * self.m1 * self.L1 ** 2  # Moment of inertia
 
         # pole 2
         self.m2 = 0.1
-        self.l2 = self.len2 = 1.0 # actually half the pole's length
-        self.L2 = 2 * self.l2
-        self.I2 = (1/12) * self.m2 * (2 * self.len2)**2
-        self.inertia_2 = (self.I2 + self.m2 * self.len2**2)
-        self.pm_len2 = self.m2 * self.len2
+        self.lc2 = 1.0
+        self.L2 = 2.0
+        self.I2 = (1 / 12) * self.m2 * self.L2 ** 2
+        self.inertia_2 = (self.I2 + self.m2 * self.lc2 ** 2)
+        self.pm_lc2 = self.m2 * self.lc2
 
         # Other params
         self.force_mag = 0.5
         self.dt = 0.05  # seconds between state updates
         self.n_coords = 2
 
-        # self.d1 = self.inertia_1 + self.m2 * self.L1**2
+        # self.d1 = self.I1 + self.m1 * self.lc1**2 + self.m2 * self.L1**2
         # self.d2 = self.inertia_2
-        # self.d3 = self.m2 * self.L1 * self.l2
-        # self.d4 = self.m1 * self.l1 + self.m2 * self.L1
-        # self.d5 = self.m2 * self.l2
+        # self.d3 = self.m2 * self.L1 * self.lc2
+        # self.d4 = self.m1 * self.lc1 + self.m2 * self.L1
+        # self.d5 = self.m2 * self.lc2
+
+        """
+        Parameters appear in the paper:
+
+        Block, D.J. and Spong, M.W., 1995. Mechanical design and control of the pendubot. SAE transactions, pp.36-43.
+
+        """
         self.d1 = 0.089252
         self.d2 = 0.027630
         self.d3 = 0.023502
@@ -110,16 +117,15 @@ class PendubotEnv(gym.Env):
     def is_done(self):
         th1, th2 = self.state[:self.n_coords]
         if self.task == "balance":
-            done =  th1 < np.pi - self.theta_threshold_radians \
-                    or th1 > np.pi + self.theta_threshold_radians \
-                    or th2 < np.pi - self.theta_threshold_radians \
-                    or th2 > np.pi + self.theta_threshold_radians
+            done = th1 < np.pi - self.theta_threshold_radians \
+                   or th1 > np.pi + self.theta_threshold_radians \
+                   or th2 < np.pi - self.theta_threshold_radians \
+                   or th2 > np.pi + self.theta_threshold_radians
         else:
-            bool = False
-        return bool(done)
+            done = False
+        return done
 
     def step(self, action):
-        # assert self.action_space.contains(action), "%r (%s) invalid"%(action, type(action))
 
         # get state
         th1, th2, th1_dot, th2_dot = self.state
@@ -130,18 +136,6 @@ class PendubotEnv(gym.Env):
         # u = np.clip(action, -self.force_mag, self.force_mag)
         u = action
         self.last_u = u
-        # acc = self._dynamics(anp.array([th1, th2, th1_dot, th2_dot, u]))
-
-        # integrate
-        # th1_acc, th2_acc = acc
-
-        # # update pole 1 position and angular velocity
-        # th1_dot = th1_dot + self.dt * th1_acc
-        # th1 = th1 + self.dt * th1_dot + 0.5 * th1_acc * self.dt**2
-        #
-        # # update pole 2 position and angular velocity
-        # th2_dot = th2_dot + self.dt * th2_acc
-        # th2 = th2 + self.dt * th2_dot + 0.5 * th2_acc * self.dt**2
 
         new_state = odeint(lambda s, t: self._dynamics(np.append(s, u)), self.state, [0., 0. + self.dt])[1]
         th1, th2, th1_dot, th2_dot = new_state
@@ -150,7 +144,10 @@ class PendubotEnv(gym.Env):
         th1 = self._unwrap_angle(th1)
         th2 = self._unwrap_angle(th2)
         self.state = np.array([th1, th2, th1_dot, th2_dot])
-        
+
+        if self.noisy:
+            self.state = self.state + np.random.normal(loc=0., scale=self.noisy_scale * 0.05, size=(4,))
+
         # done = self.is_done()
         done = False
 
@@ -163,7 +160,8 @@ class PendubotEnv(gym.Env):
             reward = - (th1 - np.pi / 2) ** 2 - th1_dot ** 2 - 0.01 * action ** 2
         else:
             if self.steps_beyond_done == 0:
-                logger.warn("You are calling 'step()' even though this environment has already returned done = True. You should always call 'reset()' once you receive 'done = True' -- any further steps are undefined behavior.")
+                logger.warn(
+                    "You are calling 'step()' even though this environment has already returned done = True. You should always call 'reset()' once you receive 'done = True' -- any further steps are undefined behavior.")
             self.steps_beyond_done += 1
             reward = -10.0
 
@@ -202,7 +200,7 @@ class PendubotEnv(gym.Env):
         m22 = self.d2
 
         mass_matrix = anp.array([[m11, m12],
-                               [m21, m22]])
+                                 [m21, m22]])
         return mass_matrix
 
     def _C(self, state):
@@ -215,7 +213,7 @@ class PendubotEnv(gym.Env):
         c21 = self.d3 * anp.sin(th2) * th1_dot
         c22 = 0.0
         return anp.array([[c11, c12],
-                        [c21, c22]])
+                          [c21, c22]])
 
     def _G(self, pos):
         """
@@ -225,29 +223,13 @@ class PendubotEnv(gym.Env):
         g1 = self.d4 * anp.cos(th1) * self.g + self.d5 * self.g * anp.cos(th1 + th2)
         g2 = self.d5 * anp.cos(th1 + th2) * self.g
         return anp.array([[g1],
-                        [g2]])
+                          [g2]])
 
     def _B(self):
         """
         Force matrix
         """
         return anp.array([[1], [0]])
-
-    def _jacobian(self):
-        """
-        Return the Jacobian of the full state equation
-        """
-        return jacobian(self._F)
-
-    def _linearize(self, vec):
-        """
-        Linearize the dynamics by first order Taylor expansion
-        """
-        f0 = self._F(vec)
-        arr = self.jacobian(vec)
-        A = arr[:, :-1]
-        B = arr[:, -1].reshape((2 * self.n_coords, 1))
-        return f0, A, B
 
     def _Minv(self, pos):
         """
@@ -272,15 +254,25 @@ class PendubotEnv(gym.Env):
         return self.d4 * self.gravity * anp.sin(th1) + self.d5 * self.gravity * anp.sin(th1 + th2)
 
     def _unwrap_angle(self, theta):
-        sign = (theta >=0)*1 - (theta < 0)*1
+        sign = (theta >= 0) * 1 - (theta < 0) * 1
         theta = anp.abs(theta) % (2 * anp.pi)
-        return sign*theta
+        return sign * theta
 
-    def integrate(self):
-        """
-        Integrate the equations of motion
-        """
-        raise NotImplementedError()
+    # def _jacobian(self):
+    #     """
+    #     Return the Jacobian of the full state equation
+    #     """
+    #     return jacobian(self._F)
+
+    # def _linearize(self, vec):
+    #     """
+    #     Linearize the dynamics by first order Taylor expansion
+    #     """
+    #     f0 = self._F(vec)
+    #     arr = self.jacobian(vec)
+    #     A = arr[:, :-1]
+    #     B = arr[:, -1].reshape((2 * self.n_coords, 1))
+    #     return f0, A, B
 
     def render(self):
         if self.render_mode is None:
@@ -371,7 +363,7 @@ class PendubotEnv(gym.Env):
         if self.last_u is not None:
             scale_img = pygame.transform.smoothscale(
                 img,
-                (10 * scale * np.abs(self.last_u) / 2, 10 * scale * np.abs(self.last_u) / 2),
+                ( scale * np.abs(self.last_u) / 2,  scale * np.abs(self.last_u) / 2),
             )
             is_flip = bool(self.last_u > 0)
             scale_img = pygame.transform.flip(scale_img, is_flip, True)
@@ -420,18 +412,21 @@ def energy_based_controller(env, kd = 1., kp = 1., ke = 1.5):
 
 
 def main():
-    env = PendubotEnv()
-    env.reset()
-    print(env.state)
-    rewards = 0.
-    for i in range(200):
-        action = energy_based_controller(env)
-        # print(action)
-        _, reward, _, _ = env.step(action)
-
-        rewards += reward
-        env.render()
-    print(rewards)
+    env = PendubotEnv(noisy=True, noisy_scale=0.5)
+    rewards = []
+    for _ in range(10):
+        env.reset()
+        print(env.state)
+        reward = 0.
+        for i in range(200):
+            action = energy_based_controller(env)
+            # print(action)
+            state, r, _, _ = env.step(action)
+            # print(state[2])
+            reward += np.exp(10 * r)
+            env.render()
+        rewards.append(reward)
+    print(sum(rewards) / len(rewards))
 
 if __name__ == '__main__':
     main()
